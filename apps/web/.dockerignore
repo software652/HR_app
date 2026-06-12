@@ -1,0 +1,8 @@
+node_modules
+.next
+*.log
+.env*
+coverage
+__tests__
+vitest.config.ts
+vitest.setup.ts

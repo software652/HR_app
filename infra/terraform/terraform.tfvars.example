@@ -1,0 +1,8 @@
+# Copy to terraform.tfvars and fill in real values before running terraform apply.
+# Never commit terraform.tfvars — it is listed in .gitignore.
+
+aws_region          = "us-east-1"
+app_name            = "hr-app"
+environment         = "production"
+domain_name         = "yourapp.com"
+acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
