@@ -1,0 +1,172 @@
+name: Deploy to AWS ECS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        default: production
+        type: choice
+        options: [production, staging]
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false   # never cancel an in-flight deploy
+
+env:
+  AWS_REGION:        ${{ vars.AWS_REGION || 'us-east-1' }}
+  ECR_REGISTRY:      ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION || 'us-east-1' }}.amazonaws.com
+  API_IMAGE_NAME:    hr-api
+  WEB_IMAGE_NAME:    hr-web
+  ECS_CLUSTER:       hr-cluster
+  API_SERVICE:       hr-api-service
+  WEB_SERVICE:       hr-web-service
+  API_TASK_DEF:      hr-api-task
+  WEB_TASK_DEF:      hr-web-task
+  API_CONTAINER:     api
+  WEB_CONTAINER:     web
+
+jobs:
+  # ── Run CI first ─────────────────────────────────────────────────────────────
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  # ── Build & push Docker images ───────────────────────────────────────────────
+  build-and-push:
+    name: Build & push images
+    needs: ci
+    runs-on: ubuntu-latest
+    outputs:
+      api-image: ${{ steps.meta-api.outputs.tags }}
+      web-image: ${{ steps.meta-web.outputs.tags }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tag
+        id: tag
+        run: echo "sha=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+
+      # API image
+      - name: Build & push API image
+        id: meta-api
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ env.API_IMAGE_NAME }}:${{ steps.tag.outputs.sha }}
+            ${{ env.ECR_REGISTRY }}/${{ env.API_IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
+
+      # Web image
+      - name: Build & push Web image
+        id: meta-web
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: true
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ secrets.NEXT_PUBLIC_API_URL }}
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ env.WEB_IMAGE_NAME }}:${{ steps.tag.outputs.sha }}
+            ${{ env.ECR_REGISTRY }}/${{ env.WEB_IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
+
+  # ── Deploy API ────────────────────────────────────────────────────────────────
+  deploy-api:
+    name: Deploy API to ECS
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Download current API task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition ${{ env.API_TASK_DEF }} \
+            --query taskDefinition \
+            > api-task-def.json
+
+      - name: Update API task definition with new image
+        id: api-task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: api-task-def.json
+          container-name:  ${{ env.API_CONTAINER }}
+          image:           ${{ env.ECR_REGISTRY }}/${{ env.API_IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Deploy API to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.api-task-def.outputs.task-definition }}
+          service:         ${{ env.API_SERVICE }}
+          cluster:         ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+  # ── Deploy Web ────────────────────────────────────────────────────────────────
+  deploy-web:
+    name: Deploy Web to ECS
+    needs: [build-and-push, deploy-api]
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Download current Web task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition ${{ env.WEB_TASK_DEF }} \
+            --query taskDefinition \
+            > web-task-def.json
+
+      - name: Update Web task definition with new image
+        id: web-task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: web-task-def.json
+          container-name:  ${{ env.WEB_CONTAINER }}
+          image:           ${{ env.ECR_REGISTRY }}/${{ env.WEB_IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Deploy Web to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.web-task-def.outputs.task-definition }}
+          service:         ${{ env.WEB_SERVICE }}
+          cluster:         ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true

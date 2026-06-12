@@ -1,0 +1,12 @@
+variable "app_name"        { type = string }
+variable "environment"     { type = string }
+variable "aws_region"      { type = string }
+variable "vpc_id"          { type = string }
+variable "private_subnets" { type = list(string) }
+variable "alb_sg_id"       { type = string }
+variable "api_image"       { type = string }
+variable "web_image"       { type = string }
+variable "api_target_group"{ type = string }
+variable "web_target_group"{ type = string }
+variable "api_env_vars"    { type = map(string) }
+variable "web_env_vars"    { type = map(string) }

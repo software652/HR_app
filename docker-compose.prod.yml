@@ -1,0 +1,43 @@
+# Production — builds optimised images, no source mounts
+# Usage: docker compose -f docker-compose.prod.yml up -d
+#
+# Required environment variables (set in .env.prod or via secrets manager):
+#   NEXT_PUBLIC_API_URL   — public URL of the API (e.g. https://api.yourapp.com)
+#   CORS_ORIGIN           — public URL of the web app (e.g. https://yourapp.com)
+services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: runner
+    ports:
+      - "4000:4000"
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      CORS_ORIGIN: "${CORS_ORIGIN:-https://yourapp.com}"
+    restart: always
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      target: runner
+      args:
+        NEXT_PUBLIC_API_URL: "${NEXT_PUBLIC_API_URL:-https://api.yourapp.com}"
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: always
